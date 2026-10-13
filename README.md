@@ -31,13 +31,23 @@ curl http://localhost:4000/api/salud
 | Logs | Sin cuerpos ni tokens; nunca se registran contraseñas | NFR-SEG-6 |
 | Contenedor | Corre como usuario `node` (no root) | Mínimo privilegio |
 
-## Pendientes conocidos (v1.0)
+## Cambios v1.1.0
 
-Estas brechas son reales y deben evaluarse en la ejecución de pruebas:
+- **RF-1.2** Refresh token con rotación (8 h); el logout revoca todas las sesiones.
+- **RF-2.1** Autoregistro con rol paciente (`POST /api/auth/registro`).
+- **RF-2.3** Edición de pacientes (`PUT /api/pacientes/:id`).
+- **RF-2.5 a 2.7** Gestión de usuarios por el administrador (`/api/usuarios`).
+- **RF-3.3** Eliminación lógica de exámenes y documentos.
+- **RF-4.3** Un documento activo por examen; subir otro lo reemplaza como nueva versión.
+- **NFR-SEG-3** Cifrado en reposo AES-256-GCM de resultados de exámenes y archivos.
+- **ERS 3.1.2** Especificación OpenAPI en `docs/openapi.yaml` y Swagger UI en `/api/docs`.
 
-- **NFR-SEG-3, cifrado en reposo**: los datos de pacientes y exámenes **no** están cifrados a nivel de columna.
-- **NFR-SEG-9, refresh token**: no implementado. Al expirar los 15 minutos, el usuario debe volver a iniciar sesión.
-- **NFR-SEG-1, TLS**: la API escucha en HTTP dentro de la red Docker. TLS se termina en el frontend (nginx).
+## Riesgos residuales conocidos
+
+- **Datos de identificación sin cifrar**: nombre, RUT y correo del paciente no se cifran, para mantener la búsqueda. En producción se mitiga con cifrado de disco del servidor de BD.
+- **Gestión de la clave**: `DATA_ENCRYPTION_KEY` está en el `.env`. En producción debe ir en un gestor de secretos con rotación. Si la clave se pierde, los datos cifrados no se pueden recuperar.
+- **TLS interno (NFR-SEG-1)**: TLS se termina en nginx; el tráfico nginx → API → BD dentro de la red Docker va sin cifrar.
+- **Integración de correo (ERS 2.5)**: el registro no envía correo de confirmación.
 
 ## Endpoints
 
