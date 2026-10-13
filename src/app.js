@@ -28,7 +28,7 @@ app.use((req, res, next) => {
   res.on('finish', () => {
     const ms = Number(process.hrtime.bigint() - inicio) / 1e6;
     const usuario = req.usuario ? `usuario=${req.usuario.id}` : 'anonimo';
-    console.log(`${new Date().toISOString()} ${req.method} ${req.path} ${res.statusCode} ${ms.toFixed(1)}ms ${usuario}`);
+        console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl.split('?')[0]} ${res.statusCode} ${ms.toFixed(1)}ms ${usuario}`);
   });
   next();
 });
@@ -51,6 +51,7 @@ app.use('/api', autenticar);
 app.use('/api/pacientes', require('./routes/pacientes'));
 app.use('/api/pacientes/:pacienteId/examenes', require('./routes/examenes'));
 app.use('/api/auditoria', require('./routes/auditoria'));
+app.use('/api/usuarios', require('./routes/usuarios'));
 app.use('/api', require('./routes/documentos'));
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Recurso no encontrado' }));
