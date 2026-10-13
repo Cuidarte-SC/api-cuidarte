@@ -4,12 +4,16 @@ const db = require('../db');
 const { requerirRol, verificarAccesoPaciente } = require('../middleware/auth');
 const { registrar, ipDe } = require('../services/auditoria');
 const { ErrorHttp, fechaValida, textoRequerido, idValido } = require('../utils/validaciones');
+const { cifrarTexto, descifrarTexto } = require('../services/cifrado');
 
 const router = express.Router({ mergeParams: true });
 
 const COLUMNAS =
   'id, paciente_id, medico_id, tipo_examen, fecha_examen, resultado, estado, creado_en, actualizado_en';
 const ESTADOS = ['pendiente', 'disponible'];
+
+// NFR-SEG-3: el resultado se guarda cifrado y se entrega descifrado solo a quien tiene acceso
+const salida = (examen) => ({ ...examen, resultado: descifrarTexto(examen.resultado) });
 
 const pacienteExiste = async (id) => {
   const { rowCount } = await db.query(
@@ -61,7 +65,7 @@ router.get('/', async (req, res) => {
     descripcion: `Listado de ${rows.length} exámenes`,
     ip: ipDe(req),
   });
-  return res.json({ datos: rows });
+  return res.json({ datos: rows.map(salida) });
 });
 
 // Ver un examen
@@ -86,7 +90,7 @@ router.get('/:examenId', async (req, res) => {
     pacienteId,
     ip: ipDe(req),
   });
-  return res.json(rows[0]);
+  return res.json(salida(rows[0]));
 });
 
 // Crear examen (médico o admin) + auditoría en la misma transacción (RF-3.1, RF-5.1)
@@ -104,7 +108,7 @@ router.post('/', requerirRol('admin', 'medico'), async (req, res) => {
         req.usuario.id,
         datos.tipo_examen,
         datos.fecha_examen,
-        datos.resultado ?? null,
+        datos.resultado === undefined ? null : cifrarTexto(datos.resultado),
         datos.estado ?? (datos.resultado ? 'disponible' : 'pendiente'),
       ],
     );
@@ -122,7 +126,7 @@ router.post('/', requerirRol('admin', 'medico'), async (req, res) => {
     );
     return rows[0];
   });
-  return res.status(201).json(examen);
+  return res.status(201).json(salida(examen));
 });
 
 // Actualizar examen (médico o admin)
@@ -137,7 +141,7 @@ router.put('/:examenId', requerirRol('admin', 'medico'), async (req, res) => {
   if (columnas.length === 0) throw new ErrorHttp(400, 'No hay campos para actualizar');
 
   const sets = columnas.map((c, i) => `${c} = $${i + 1}`);
-  const params = columnas.map((c) => datos[c]);
+  const params = columnas.map((c) => (c === 'resultado' ? cifrarTexto(datos[c]) : datos[c]));
   params.push(examenId, pacienteId);
 
   const examen = await db.transaccion(async (cliente) => {
@@ -161,7 +165,7 @@ router.put('/:examenId', requerirRol('admin', 'medico'), async (req, res) => {
     );
     return rows[0];
   });
-  return res.json(examen);
+  return res.json(salida(examen));
 });
 
 // RF-3.3: eliminar examen (lógico). También se dan de baja sus documentos.

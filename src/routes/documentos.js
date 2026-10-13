@@ -11,6 +11,7 @@ const db = require('../db');
 const { requerirRol, verificarAccesoPaciente } = require('../middleware/auth');
 const { registrar, ipDe } = require('../services/auditoria');
 const { ErrorHttp, idValido } = require('../utils/validaciones');
+const { cifrarArchivo, descifrarArchivo } = require('../services/cifrado');
 
 const router = express.Router();
 
@@ -70,7 +71,8 @@ router.post(
     // Nombre en disco generado por el servidor: nunca se usa el nombre enviado por el cliente
     const nombreInterno = crypto.randomUUID();
     const ruta = path.join(config.documentosDir, nombreInterno);
-    await fs.promises.writeFile(ruta, archivo.buffer, { flag: 'wx' });
+    // NFR-SEG-3: el archivo se guarda cifrado en disco
+    await fs.promises.writeFile(ruta, cifrarArchivo(archivo.buffer), { flag: 'wx' });
 
     const nombreOriginal = path.basename(archivo.originalname).slice(0, 255);
 
@@ -164,9 +166,11 @@ router.get('/documentos/:id/descarga', async (req, res) => {
     ip: ipDe(req),
   });
 
+  // NFR-SEG-3: se descifra en memoria solo para quien tiene acceso
+  const contenido = descifrarArchivo(await fs.promises.readFile(ruta));
   res.attachment(documento.nombre_archivo);
   res.type(documento.mime_type);
-  return res.sendFile(ruta);
+  return res.send(contenido);
 });
 
 // RF-3.3: eliminar documento (lógico; el archivo se conserva para trazabilidad)

@@ -12,6 +12,12 @@ if (jwtSecret.length < 32) {
   throw new Error('JWT_SECRET debe tener al menos 32 caracteres (NFR-SEG)');
 }
 
+ // NFR-SEG-3: clave AES-256 (64 caracteres hexadecimales = 32 bytes)
+  const claveDatos = requerida('DATA_ENCRYPTION_KEY');
+    if (!/^[0-9a-fA-F]{64}$/.test(claveDatos)) {
+      throw new Error('DATA_ENCRYPTION_KEY debe tener 64 caracteres hexadecimales (NFR-SEG-3)');
+    }
+
 module.exports = {
   puerto: Number(process.env.PORT || 4000),
   entorno: process.env.NODE_ENV || 'development',
@@ -26,5 +32,6 @@ module.exports = {
   corsOrigenes: (process.env.CORS_ORIGIN || 'http://localhost:8080,https://localhost:8443')
     .split(',')
     .map((o) => o.trim()),
+    claveDatos,
   bcryptCosto: 12, // NFR-SEG-2
 };
