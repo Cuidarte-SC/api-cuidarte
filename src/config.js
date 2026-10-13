@@ -21,6 +21,7 @@ module.exports = {
     expiraEn: process.env.JWT_EXPIRES_IN || '15m', // NFR-SEG-9: corta vigencia
     algoritmo: 'HS256',
   },
+  refreshHoras: Number(process.env.REFRESH_TOKEN_HORAS || 8), // vigencia del refresh token
   documentosDir: process.env.DOCUMENTOS_DIR || '/data/documentos',
   corsOrigenes: (process.env.CORS_ORIGIN || 'http://localhost:8080,https://localhost:8443')
     .split(',')

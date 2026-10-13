@@ -28,7 +28,7 @@ const autenticar = async (req, res, next) => {
 
   // El usuario debe seguir activo y el rol se toma de la BD, no del token
   const { rows } = await db.query(
-    'SELECT id, nombre_usuario, nombre, rol, paciente_id, activo FROM usuario WHERE id = $1',
+       'SELECT id, nombre_usuario, nombre, rol, paciente_id, activo FROM usuario WHERE id = $1 AND eliminado_en IS NULL',
     [payload.sub],
   );
   const usuario = rows[0];
