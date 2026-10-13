@@ -50,7 +50,7 @@ router.get('/', async (req, res) => {
   await pacienteExiste(pacienteId);
 
   const { rows } = await db.query(
-    `SELECT ${COLUMNAS} FROM examen WHERE paciente_id = $1 ORDER BY fecha_examen DESC, id DESC`,
+    `SELECT ${COLUMNAS} FROM examen WHERE paciente_id = $1 AND eliminado_en IS NULL ORDER BY fecha_examen DESC, id DESC`,
     [pacienteId],
   );
   await registrar({
@@ -73,7 +73,7 @@ router.get('/:examenId', async (req, res) => {
   }
 
   const { rows } = await db.query(
-    `SELECT ${COLUMNAS} FROM examen WHERE id = $1 AND paciente_id = $2`,
+    `SELECT ${COLUMNAS} FROM examen WHERE id = $1 AND paciente_id = $2 AND eliminado_en IS NULL`,
     [examenId, pacienteId],
   );
   if (!rows[0]) throw new ErrorHttp(404, 'Examen no encontrado');
@@ -143,7 +143,7 @@ router.put('/:examenId', requerirRol('admin', 'medico'), async (req, res) => {
   const examen = await db.transaccion(async (cliente) => {
     const { rows } = await cliente.query(
       `UPDATE examen SET ${sets.join(', ')}, actualizado_en = now()
-       WHERE id = $${params.length - 1} AND paciente_id = $${params.length} RETURNING ${COLUMNAS}`,
+       WHERE id = $${params.length - 1} AND paciente_id = $${params.length} AND eliminado_en IS NULL RETURNING ${COLUMNAS}`,
       params,
     );
     if (!rows[0]) throw new ErrorHttp(404, 'Examen no encontrado');
@@ -162,6 +162,39 @@ router.put('/:examenId', requerirRol('admin', 'medico'), async (req, res) => {
     return rows[0];
   });
   return res.json(examen);
+});
+
+// RF-3.3: eliminar examen (lógico). También se dan de baja sus documentos.
+// La confirmación previa la solicita el frontend antes de llamar a este endpoint.
+router.delete('/:examenId', requerirRol('admin', 'medico'), async (req, res) => {
+  const pacienteId = idValido(req.params.pacienteId);
+  const examenId = idValido(req.params.examenId);
+
+  await db.transaccion(async (cliente) => {
+    const { rowCount } = await cliente.query(
+      `UPDATE examen SET eliminado_en = now()
+       WHERE id = $1 AND paciente_id = $2 AND eliminado_en IS NULL`,
+      [examenId, pacienteId],
+    );
+    if (rowCount === 0) throw new ErrorHttp(404, 'Examen no encontrado');
+    const docs = await cliente.query(
+      'UPDATE documento SET eliminado_en = now() WHERE examen_id = $1 AND eliminado_en IS NULL',
+      [examenId],
+    );
+    await registrar(
+      {
+        usuarioId: req.usuario.id,
+        accion: 'DELETE',
+        tabla: 'examen',
+        registroId: examenId,
+        pacienteId,
+        descripcion: `Eliminación lógica de examen (${docs.rowCount} documento(s) dados de baja)`,
+        ip: ipDe(req),
+      },
+      cliente,
+    );
+  });
+  return res.status(204).end();
 });
 
 module.exports = router;

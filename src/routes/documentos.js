@@ -1,4 +1,6 @@
-// RF-4: carga y descarga de documentos médicos asociados a un examen
+// RF-4: documentos médicos asociados a un examen
+// RF-4.3: un documento activo por examen; subir uno nuevo reemplaza al anterior (nueva versión, RF-3.2)
+// RF-3.3: eliminación lógica de documentos
 const express = require('express');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -35,9 +37,14 @@ const subida = multer({
 
 fs.mkdirSync(config.documentosDir, { recursive: true });
 
-// Obtiene el examen y valida que el usuario pueda acceder a su paciente
+const COLUMNAS = 'id, examen_id, paciente_id, nombre_archivo, mime_type, tamano_bytes, version, subido_en';
+
+// Obtiene el examen (no eliminado) y valida que el usuario pueda acceder a su paciente
 const examenAccesible = async (req, examenId) => {
-  const { rows } = await db.query('SELECT id, paciente_id FROM examen WHERE id = $1', [examenId]);
+  const { rows } = await db.query(
+    'SELECT id, paciente_id FROM examen WHERE id = $1 AND eliminado_en IS NULL',
+    [examenId],
+  );
   if (!rows[0]) throw new ErrorHttp(404, 'Examen no encontrado');
   if (!(await verificarAccesoPaciente(req, rows[0].paciente_id))) {
     throw new ErrorHttp(403, 'Acceso denegado: el documento pertenece a otro paciente');
@@ -68,15 +75,20 @@ router.post(
     const nombreOriginal = path.basename(archivo.originalname).slice(0, 255);
 
     const documento = await db.transaccion(async (cliente) => {
+      // El documento activo anterior queda reemplazado (se conserva como versión previa)
+      const anterior = await cliente.query(
+        'UPDATE documento SET eliminado_en = now() WHERE examen_id = $1 AND eliminado_en IS NULL RETURNING id',
+        [examenId],
+      );
       const version = await cliente.query(
-        'SELECT COALESCE(max(version), 0) + 1 AS v FROM documento WHERE examen_id = $1 AND nombre_archivo = $2',
-        [examenId, nombreOriginal],
+        'SELECT COALESCE(max(version), 0) + 1 AS v FROM documento WHERE examen_id = $1',
+        [examenId],
       );
       const { rows } = await cliente.query(
         `INSERT INTO documento (examen_id, paciente_id, nombre_archivo, mime_type, tamano_bytes,
                                 ruta_almacenamiento, version, subido_por)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING id, examen_id, paciente_id, nombre_archivo, mime_type, tamano_bytes, version, subido_en`,
+         RETURNING ${COLUMNAS}`,
         [
           examenId,
           examen.paciente_id,
@@ -88,14 +100,15 @@ router.post(
           req.usuario.id,
         ],
       );
+      const reemplazo = anterior.rowCount > 0 ? ` reemplaza al documento ${anterior.rows[0].id}` : '';
       await registrar(
         {
           usuarioId: req.usuario.id,
-          accion: 'CREATE',
+          accion: anterior.rowCount > 0 ? 'UPDATE' : 'CREATE',
           tabla: 'documento',
           registroId: rows[0].id,
           pacienteId: examen.paciente_id,
-          descripcion: `Documento subido (${archivo.mimetype}, ${archivo.size} bytes)`,
+          descripcion: `Documento v${rows[0].version} subido (${archivo.mimetype}, ${archivo.size} bytes)${reemplazo}`,
           ip: ipDe(req),
         },
         cliente,
@@ -107,24 +120,23 @@ router.post(
   },
 );
 
-// Listar documentos de un examen
+// Listar el documento activo de un examen
 router.get('/examenes/:examenId/documentos', async (req, res) => {
   const examenId = idValido(req.params.examenId);
   await examenAccesible(req, examenId);
 
   const { rows } = await db.query(
-    `SELECT id, examen_id, paciente_id, nombre_archivo, mime_type, tamano_bytes, version, subido_en
-     FROM documento WHERE examen_id = $1 ORDER BY subido_en DESC`,
+    `SELECT ${COLUMNAS} FROM documento WHERE examen_id = $1 AND eliminado_en IS NULL`,
     [examenId],
   );
   return res.json({ datos: rows });
 });
 
-// Descargar documento
-router.get('/documentos/:id/descarga', async (req, res) => {
-  const id = idValido(req.params.id);
+// Busca un documento activo y valida el acceso del usuario
+const documentoAccesible = async (req, id) => {
   const { rows } = await db.query(
-    'SELECT id, examen_id, paciente_id, nombre_archivo, mime_type, ruta_almacenamiento FROM documento WHERE id = $1',
+    `SELECT id, examen_id, paciente_id, nombre_archivo, mime_type, ruta_almacenamiento
+     FROM documento WHERE id = $1 AND eliminado_en IS NULL`,
     [id],
   );
   const documento = rows[0];
@@ -132,6 +144,13 @@ router.get('/documentos/:id/descarga', async (req, res) => {
   if (!(await verificarAccesoPaciente(req, documento.paciente_id))) {
     throw new ErrorHttp(403, 'Acceso denegado: el documento pertenece a otro paciente');
   }
+  return documento;
+};
+
+// Descargar documento (RF-4.2)
+router.get('/documentos/:id/descarga', async (req, res) => {
+  const id = idValido(req.params.id);
+  const documento = await documentoAccesible(req, id);
 
   const ruta = path.join(config.documentosDir, path.basename(documento.ruta_almacenamiento));
   if (!fs.existsSync(ruta)) throw new ErrorHttp(404, 'Archivo no disponible en el almacenamiento');
@@ -148,6 +167,29 @@ router.get('/documentos/:id/descarga', async (req, res) => {
   res.attachment(documento.nombre_archivo);
   res.type(documento.mime_type);
   return res.sendFile(ruta);
+});
+
+// RF-3.3: eliminar documento (lógico; el archivo se conserva para trazabilidad)
+router.delete('/documentos/:id', requerirRol('admin', 'medico'), async (req, res) => {
+  const id = idValido(req.params.id);
+  const documento = await documentoAccesible(req, id);
+
+  await db.transaccion(async (cliente) => {
+    await cliente.query('UPDATE documento SET eliminado_en = now() WHERE id = $1', [id]);
+    await registrar(
+      {
+        usuarioId: req.usuario.id,
+        accion: 'DELETE',
+        tabla: 'documento',
+        registroId: id,
+        pacienteId: documento.paciente_id,
+        descripcion: 'Eliminación lógica de documento',
+        ip: ipDe(req),
+      },
+      cliente,
+    );
+  });
+  return res.status(204).end();
 });
 
 module.exports = router;
