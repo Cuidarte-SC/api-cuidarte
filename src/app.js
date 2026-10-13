@@ -1,4 +1,7 @@
 // Aplicación Express de Cuidarte+
+
+const fs = require('node:fs');
+const path = require('node:path');
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
@@ -42,6 +45,16 @@ app.get('/api/salud', async (req, res) => {
     res.status(503).json({ estado: 'degradado', bd: 'sin conexión' });
   }
 });
+
+// Documentación OpenAPI interactiva (ERS 3.1.2). Se desactiva con SWAGGER_UI=false.
+  if (process.env.SWAGGER_UI !== 'false') {
+    const swaggerUi = require('swagger-ui-express');
+    const YAML = require('yaml');
+    const rutaSpec = path.join(__dirname, '..', 'docs', 'openapi.yaml');
+    const especificacion = YAML.parse(fs.readFileSync(rutaSpec, 'utf8'));
+    app.get('/api/openapi.yaml', (req, res) => res.type('text/yaml').sendFile(rutaSpec));
+    app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(especificacion, { customSiteTitle: 'Cuidarte+ API' }));
+  }
 
 // Rutas públicas
 app.use('/api/auth', require('./routes/auth'));

@@ -7,6 +7,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY src ./src
+COPY docs ./docs
 
 # Carpeta de documentos con dueño no-root
 RUN mkdir -p /data/documentos && chown -R node:node /data/documentos

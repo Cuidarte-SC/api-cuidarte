@@ -1,0 +1,634 @@
+openapi: 3.0.3
+info:
+  title: Cuidarte+ API
+  version: 1.1.0
+  description: |
+    API REST del sistema de exámenes médicos **Cuidarte+** (Caso B, ISY1102).
+
+    **Autenticación:** inicie sesión en `POST /auth/login`, copie el `token` y presione
+    **Authorize** (arriba a la derecha). El token de acceso dura 15 minutos (NFR-SEG-9);
+    renuévelo con `POST /auth/refresh`.
+
+    **Roles:** `admin` (acceso completo, RB-2), `medico` (gestiona pacientes y exámenes, RB-3),
+    `paciente` (solo lectura de su propia ficha, RB-1). El control de acceso se aplica en el
+    backend (NFR-SEG-4) y todo intento denegado queda en auditoría.
+
+    Todas las fechas usan formato `AAAA-MM-DD`. Los errores responden `{ "error": "mensaje" }`.
+servers:
+  - url: http://localhost:4000/api
+    description: Ambiente QA (directo a la API)
+  - url: https://localhost:8443/api
+    description: Ambiente QA (a través de nginx con TLS)
+tags:
+  - name: Salud
+  - name: Autenticación
+    description: RF-1 · RF-2.1
+  - name: Usuarios
+    description: RF-2.5 a RF-2.7 (solo admin)
+  - name: Pacientes
+    description: RF-2.2 a RF-2.4
+  - name: Exámenes
+    description: RF-3
+  - name: Documentos
+    description: RF-4
+  - name: Auditoría
+    description: RF-5 (solo admin)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /salud:
+    get:
+      tags: [Salud]
+      summary: Estado de la API y la base de datos
+      security: []
+      responses:
+        '200':
+          description: API y BD operativas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  estado: { type: string, example: ok }
+                  bd: { type: string, example: ok }
+                  fecha: { type: string, format: date-time }
+        '503':
+          description: Base de datos no disponible
+
+  /auth/login:
+    post:
+      tags: [Autenticación]
+      summary: Iniciar sesión (RF-1.1)
+      description: Máximo 10 intentos cada 15 minutos por IP. El mensaje de error no revela si el usuario existe.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nombre_usuario, password]
+              properties:
+                nombre_usuario: { type: string, example: dr_carlos }
+                password: { type: string, format: password, example: SecurePass123! }
+      responses:
+        '200':
+          description: Sesión iniciada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sesion' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '429': { $ref: '#/components/responses/DemasiadosIntentos' }
+
+  /auth/registro:
+    post:
+      tags: [Autenticación]
+      summary: Autoregistro de usuario con rol paciente (RF-2.1)
+      description: |
+        Crea una cuenta con rol **paciente**; cualquier rol enviado se ignora. La cuenta queda sin
+        ficha clínica hasta que un administrador la vincule. Máximo 5 registros por hora por IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nombre_usuario, password, correo]
+              properties:
+                nombre_usuario: { type: string, pattern: '^[A-Za-z0-9._-]{3,50}$', example: maria.lopez }
+                password:
+                  type: string
+                  format: password
+                  description: 12 a 72 caracteres, con mayúscula, minúscula, número y símbolo
+                  example: Registro#2026x
+                correo: { type: string, format: email, example: maria@mail.com }
+                nombre: { type: string, maxLength: 120, example: María López }
+      responses:
+        '201':
+          description: Cuenta creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UsuarioPublico' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '409': { $ref: '#/components/responses/Conflicto' }
+        '429': { $ref: '#/components/responses/DemasiadosIntentos' }
+
+  /auth/refresh:
+    post:
+      tags: [Autenticación]
+      summary: Renovar la sesión (RF-1.2)
+      description: Rotación de tokens. El refresh token usado queda revocado y se entrega uno nuevo.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: Nueva sesión
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sesion' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+
+  /auth/logout:
+    post:
+      tags: [Autenticación]
+      summary: Cerrar sesión y revocar tokens (RF-1.2)
+      responses:
+        '204': { description: Sesión cerrada; el token y los refresh tokens quedan revocados }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+
+  /auth/me:
+    get:
+      tags: [Autenticación]
+      summary: Usuario de la sesión actual
+      responses:
+        '200':
+          description: Usuario autenticado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UsuarioPublico' }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+
+  /usuarios:
+    get:
+      tags: [Usuarios]
+      summary: Listar usuarios (RF-2.5)
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: 'Busca en usuario, nombre o correo' }
+        - { name: rol, in: query, schema: { $ref: '#/components/schemas/Rol' } }
+      responses:
+        '200':
+          description: Usuarios no eliminados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  datos: { type: array, items: { $ref: '#/components/schemas/Usuario' } }
+        '401': { $ref: '#/components/responses/NoAutenticado' }
+        '403': { $ref: '#/components/responses/Prohibido' }
+
+  /usuarios/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/IdRuta' }
+    get:
+      tags: [Usuarios]
+      summary: Ver un usuario
+      responses:
+        '200':
+          description: Usuario
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    put:
+      tags: [Usuarios]
+      summary: Editar usuario, asignar rol o vincular ficha (RF-2.6)
+      description: |
+        Un cambio de rol o la desactivación revoca las sesiones del usuario. Si el rol final no es
+        `paciente`, `paciente_id` queda en null. El administrador no puede quitarse su propio rol.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nombre: { type: string }
+                correo: { type: string, format: email }
+                rol: { $ref: '#/components/schemas/Rol' }
+                activo: { type: boolean }
+                paciente_id: { type: integer, nullable: true, example: 103 }
+      responses:
+        '200':
+          description: Usuario actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { $ref: '#/components/responses/Conflicto' }
+    delete:
+      tags: [Usuarios]
+      summary: Eliminar usuario (lógico) (RF-2.7)
+      responses:
+        '204': { description: Usuario eliminado y sesiones revocadas }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /pacientes:
+    get:
+      tags: [Pacientes]
+      summary: Listar y buscar pacientes (admin, médico)
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: 'Busca por nombre o RUT' }
+        - { name: pagina, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limite, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Página de pacientes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  datos: { type: array, items: { $ref: '#/components/schemas/Paciente' } }
+                  pagina: { type: integer }
+                  limite: { type: integer }
+                  total: { type: integer }
+        '403': { $ref: '#/components/responses/Prohibido' }
+    post:
+      tags: [Pacientes]
+      summary: Registrar paciente (RF-2.2)
+      description: Opcionalmente crea la cuenta de acceso con `credenciales`; su rol siempre es `paciente`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/PacienteEntrada'
+                - type: object
+                  required: [nombre, rut, correo, fecha_nacimiento]
+                  properties:
+                    credenciales:
+                      type: object
+                      required: [nombre_usuario, password]
+                      properties:
+                        nombre_usuario: { type: string }
+                        password: { type: string, format: password }
+      responses:
+        '201':
+          description: Paciente creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paciente' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '409': { $ref: '#/components/responses/Conflicto' }
+
+  /pacientes/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/IdRuta' }
+    get:
+      tags: [Pacientes]
+      summary: Ver ficha del paciente (RF-2.4); el paciente solo la propia (RB-1)
+      responses:
+        '200':
+          description: Ficha
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paciente' }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    put:
+      tags: [Pacientes]
+      summary: Editar paciente (RF-2.3)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PacienteEntrada' }
+      responses:
+        '200':
+          description: Paciente actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paciente' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { $ref: '#/components/responses/Conflicto' }
+    delete:
+      tags: [Pacientes]
+      summary: Eliminar paciente (lógico, solo admin)
+      responses:
+        '204': { description: Paciente eliminado }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /pacientes/{id}/examenes:
+    parameters:
+      - { $ref: '#/components/parameters/IdRuta' }
+    get:
+      tags: [Exámenes]
+      summary: Listar exámenes del paciente (RF-4.1)
+      responses:
+        '200':
+          description: Exámenes no eliminados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  datos: { type: array, items: { $ref: '#/components/schemas/Examen' } }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    post:
+      tags: [Exámenes]
+      summary: Registrar examen (RF-3.1)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/ExamenEntrada'
+                - type: object
+                  required: [tipo_examen, fecha_examen]
+      responses:
+        '201':
+          description: Examen creado y auditado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Examen' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /pacientes/{id}/examenes/{examenId}:
+    parameters:
+      - { $ref: '#/components/parameters/IdRuta' }
+      - { name: examenId, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    get:
+      tags: [Exámenes]
+      summary: Ver examen
+      responses:
+        '200':
+          description: Examen
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Examen' }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    put:
+      tags: [Exámenes]
+      summary: Editar examen (RF-3.2)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExamenEntrada' }
+      responses:
+        '200':
+          description: Examen actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Examen' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    delete:
+      tags: [Exámenes]
+      summary: Eliminar examen y su documento (lógico) (RF-3.3)
+      description: La confirmación previa la solicita el frontend.
+      responses:
+        '204': { description: Examen eliminado }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /examenes/{examenId}/documentos:
+    parameters:
+      - { name: examenId, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    get:
+      tags: [Documentos]
+      summary: Documento activo del examen
+      responses:
+        '200':
+          description: Lista con 0 o 1 documento activo (RF-4.3)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  datos: { type: array, items: { $ref: '#/components/schemas/Documento' } }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    post:
+      tags: [Documentos]
+      summary: Subir o reemplazar documento (RF-4.3, RF-3.2)
+      description: |
+        Formatos PDF, DOC/DOCX, PPT/PPTX, JPG o PNG, validados por firma del archivo; máximo 10 MB.
+        Si el examen ya tiene documento, el nuevo lo reemplaza como versión siguiente.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [archivo]
+              properties:
+                archivo: { type: string, format: binary }
+      responses:
+        '201':
+          description: Documento guardado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Documento' }
+        '400': { $ref: '#/components/responses/Invalido' }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '413': { description: El archivo supera 10 MB }
+        '415': { description: Tipo de archivo no permitido }
+
+  /documentos/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/IdRuta' }
+    delete:
+      tags: [Documentos]
+      summary: Eliminar documento (lógico) (RF-3.3)
+      responses:
+        '204': { description: Documento eliminado }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /documentos/{id}/descarga:
+    parameters:
+      - { $ref: '#/components/parameters/IdRuta' }
+    get:
+      tags: [Documentos]
+      summary: Descargar documento (RF-4.2)
+      responses:
+        '200':
+          description: Archivo
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Prohibido' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /auditoria:
+    get:
+      tags: [Auditoría]
+      summary: Consultar registro de auditoría (RF-5.1)
+      parameters:
+        - { name: paciente_id, in: query, schema: { type: integer } }
+        - { name: usuario_id, in: query, schema: { type: integer } }
+        - name: accion
+          in: query
+          schema:
+            type: string
+            enum: [CREATE, READ, UPDATE, DELETE, LOGIN, LOGIN_FALLIDO, LOGOUT, ACCESO_DENEGADO, DESCARGA]
+        - { name: limite, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 50 } }
+      responses:
+        '200':
+          description: Registros, del más reciente al más antiguo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  datos: { type: array, items: { $ref: '#/components/schemas/RegistroAuditoria' } }
+        '403': { $ref: '#/components/responses/Prohibido' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    IdRuta:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+
+  responses:
+    Invalido:
+      description: Datos de entrada inválidos
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NoAutenticado:
+      description: Sin sesión, token inválido, expirado o revocado
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Prohibido:
+      description: El rol no tiene permiso (queda registrado como ACCESO_DENEGADO)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NoEncontrado:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflicto:
+      description: Dato duplicado (RUT, usuario o correo)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    DemasiadosIntentos:
+      description: Límite de intentos superado
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string, example: 'Acceso denegado: rol paciente no autorizado' }
+    Rol:
+      type: string
+      enum: [admin, medico, paciente]
+    UsuarioPublico:
+      type: object
+      properties:
+        id: { type: integer }
+        nombre_usuario: { type: string }
+        nombre: { type: string }
+        rol: { $ref: '#/components/schemas/Rol' }
+        paciente_id: { type: integer, nullable: true }
+    Usuario:
+      allOf:
+        - $ref: '#/components/schemas/UsuarioPublico'
+        - type: object
+          properties:
+            correo: { type: string, format: email }
+            activo: { type: boolean }
+            creado_en: { type: string, format: date-time }
+    Sesion:
+      type: object
+      properties:
+        token: { type: string, description: JWT de acceso (15 min) }
+        tipo: { type: string, example: Bearer }
+        expira_en: { type: string, format: date-time }
+        refresh_token: { type: string, description: Token opaco para renovar la sesión (8 h) }
+        usuario: { $ref: '#/components/schemas/UsuarioPublico' }
+    PacienteEntrada:
+      type: object
+      properties:
+        nombre: { type: string, maxLength: 120, example: Juan Pérez García }
+        rut:
+          type: string
+          pattern: '^\d{1,2}\.\d{3}\.\d{3}-[\dK]$'
+          description: Con dígito verificador válido (módulo 11)
+          example: 18.765.432-7
+        correo: { type: string, format: email, example: juan.perez@mail.com }
+        fecha_nacimiento: { type: string, format: date, example: '1962-05-15' }
+        consentimiento_datos: { type: boolean, description: Autorización Ley 19.628 }
+    Paciente:
+      allOf:
+        - $ref: '#/components/schemas/PacienteEntrada'
+        - type: object
+          properties:
+            id: { type: integer }
+            creado_en: { type: string, format: date-time }
+    ExamenEntrada:
+      type: object
+      properties:
+        tipo_examen: { type: string, maxLength: 80, example: Hemograma }
+        fecha_examen: { type: string, format: date, example: '2026-09-03' }
+        resultado: { type: string, maxLength: 5000, example: Hemoglobina 14.5 g/dL (Normal) }
+        estado: { type: string, enum: [pendiente, disponible] }
+    Examen:
+      allOf:
+        - $ref: '#/components/schemas/ExamenEntrada'
+        - type: object
+          properties:
+            id: { type: integer }
+            paciente_id: { type: integer }
+            medico_id: { type: integer }
+            creado_en: { type: string, format: date-time }
+            actualizado_en: { type: string, format: date-time }
+    Documento:
+      type: object
+      properties:
+        id: { type: integer }
+        examen_id: { type: integer }
+        paciente_id: { type: integer }
+        nombre_archivo: { type: string }
+        mime_type: { type: string }
+        tamano_bytes: { type: integer }
+        version: { type: integer }
+        subido_en: { type: string, format: date-time }
+    RegistroAuditoria:
+      type: object
+      properties:
+        id: { type: integer }
+        usuario_id: { type: integer, nullable: true }
+        nombre_usuario: { type: string, nullable: true }
+        accion: { type: string }
+        tabla_afectada: { type: string, nullable: true }
+        registro_id: { type: integer, nullable: true }
+        paciente_id: { type: integer, nullable: true }
+        descripcion: { type: string, nullable: true }
+        ip_origen: { type: string, nullable: true }
+        creado_en: { type: string, format: date-time }
