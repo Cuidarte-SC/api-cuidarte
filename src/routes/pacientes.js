@@ -66,7 +66,7 @@ router.get('/:id', async (req, res) => {
   return res.json(rows[0]);
 });
 
-// Registro de paciente por médico o administrador (RF-2.2 / RF-2.3)
+// Registro de paciente por médico o administrador (RF-2.2)
 // Opcional: "credenciales" crea la cuenta de acceso; el rol SIEMPRE es 'paciente'.
 router.post('/', requerirRol('admin', 'medico'), async (req, res) => {
   const body = req.body || {};
@@ -133,6 +133,76 @@ router.post('/', requerirRol('admin', 'medico'), async (req, res) => {
     throw err;
   }
 });
+
+
+// RF-2.3: editar el registro de un paciente (médico o admin)
+router.put('/:id', requerirRol('admin', 'medico'), async (req, res) => {
+  const id = idValido(req.params.id);
+  const body = req.body || {};
+  const datos = {};
+
+  if (body.nombre !== undefined) datos.nombre = textoRequerido(body.nombre, 'nombre', 120);
+  if (body.rut !== undefined) {
+    if (!rutValido(body.rut)) {
+      throw new ErrorHttp(400, 'RUT inválido: use el formato XX.XXX.XXX-D con dígito verificador correcto');
+    }
+    datos.rut = body.rut;
+  }
+  if (body.correo !== undefined) {
+    if (!correoValido(body.correo)) throw new ErrorHttp(400, 'Correo inválido');
+    datos.correo = body.correo.trim();
+  }
+  if (body.fecha_nacimiento !== undefined) {
+    if (!fechaValida(body.fecha_nacimiento)) {
+      throw new ErrorHttp(400, 'fecha_nacimiento inválida (formato AAAA-MM-DD)');
+    }
+    datos.fecha_nacimiento = body.fecha_nacimiento;
+  }
+  if (body.consentimiento_datos !== undefined) {
+    if (typeof body.consentimiento_datos !== 'boolean') {
+      throw new ErrorHttp(400, 'consentimiento_datos debe ser true o false');
+    }
+    datos.consentimiento_datos = body.consentimiento_datos;
+  }
+
+  // Lista blanca de columnas: los nombres nunca vienen del usuario
+  const permitidas = ['nombre', 'rut', 'correo', 'fecha_nacimiento', 'consentimiento_datos'];
+  const columnas = permitidas.filter((c) => datos[c] !== undefined);
+  if (columnas.length === 0) throw new ErrorHttp(400, 'No hay campos para actualizar');
+
+  const sets = columnas.map((c, i) => `${c} = $${i + 1}`);
+  const params = columnas.map((c) => datos[c]);
+  params.push(id);
+
+  try {
+    const paciente = await db.transaccion(async (cliente) => {
+      const { rows } = await cliente.query(
+        `UPDATE paciente SET ${sets.join(', ')}
+         WHERE id = $${params.length} AND eliminado_en IS NULL RETURNING ${COLUMNAS}`,
+        params,
+      );
+      if (!rows[0]) throw new ErrorHttp(404, 'Paciente no encontrado');
+      await registrar(
+        {
+          usuarioId: req.usuario.id,
+          accion: 'UPDATE',
+          tabla: 'paciente',
+          registroId: id,
+          pacienteId: id,
+          descripcion: `Campos actualizados: ${columnas.join(', ')}`,
+          ip: ipDe(req),
+        },
+        cliente,
+      );
+      return rows[0];
+    });
+    return res.json(paciente);
+  } catch (err) {
+    if (err.code === '23505') throw new ErrorHttp(409, 'Ya existe un paciente con ese RUT');
+    throw err;
+  }
+});
+
 
 // Eliminación lógica (solo admin); se conserva para trazabilidad
 router.delete('/:id', requerirRol('admin'), async (req, res) => {
