@@ -14,7 +14,7 @@ const { ErrorHttp } = require('./utils/validaciones');
 const app = express();
 
 // No se confía en X-Forwarded-For: evita que un cliente falsifique su IP en auditoría y rate limit
-app.set('trust proxy', false);
+app.set('trust proxy', 1);
 app.use(helmet()); // cabeceras de seguridad (HSTS, nosniff, CSP, etc.)
 app.use(
   cors({

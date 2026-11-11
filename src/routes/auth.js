@@ -22,7 +22,16 @@ const limitador = (limite, minutos, mensaje) =>
   });
 
 // Fuerza bruta: 10 intentos de login cada 15 min por IP
-const limiteLogin = limitador(10, 15, 'Demasiados intentos de inicio de sesión, intente en 15 minutos');
+const limiteLogin = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,                       // no contar logins correctos
+  keyGenerator: (req) => `${req.ip}:${req.body?.nombre_usuario ?? ''}`,
+  message: { error: 'Demasiados intentos de inicio de sesión, intente en 15 minutos' },
+});
+
 const limiteRegistro = limitador(5, 60, 'Demasiados registros desde esta conexión, intente más tarde');
 const limiteRefresh = limitador(60, 15, 'Demasiadas renovaciones de sesión, intente más tarde');
 
