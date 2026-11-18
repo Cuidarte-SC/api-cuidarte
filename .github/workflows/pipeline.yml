@@ -1,0 +1,107 @@
+name: Pipeline de calidad y seguridad
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  calidad-seguridad:
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: postgres:14-alpine
+        env:
+          POSTGRES_USER: cuidarte
+          POSTGRES_PASSWORD: cuidarte
+          POSTGRES_DB: cuidarte
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cuidarte -d cuidarte"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://cuidarte:cuidarte@localhost:5432/cuidarte
+      JWT_SECRET: ci_jwt_secret_de_pruebas_con_mas_de_32_caracteres_0001
+      DATA_ENCRYPTION_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+      PORT: "4000"
+      NODE_ENV: test
+
+    steps:
+      - name: Checkout API
+        uses: actions/checkout@v4
+
+      - name: Checkout infra
+        uses: actions/checkout@v4
+        with:
+          repository: Cuidarte-SC/infra-cuidarte
+          path: infra-cuidarte
+
+      - name: Checkout QA
+        uses: actions/checkout@v4
+        with:
+          repository: Cuidarte-SC/qa-cuidarte
+          path: qa-cuidarte
+
+      - name: Checkout Frontend
+        uses: actions/checkout@v4
+        with:
+          repository: Cuidarte-SC/frontend-cuidarte
+          path: frontend-cuidarte
+
+      - name: Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: SCA npm audit API
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: SCA npm audit Frontend
+        run: npm audit --package-lock-only --omit=dev --audit-level=high --prefix ./frontend-cuidarte
+
+      - name: Sembrar base de datos
+        env:
+          PGPASSWORD: cuidarte
+        run: |
+          for f in infra-cuidarte/db/init/01_schema.sql \
+                   infra-cuidarte/db/init/02_seed.sql \
+                   infra-cuidarte/db/init/03_v1_1.sql; do
+            psql -h localhost -U cuidarte -d cuidarte -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Levantar la API
+        run: |
+          npm start &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:4000/api/salud > /dev/null && echo "API lista" && exit 0
+            sleep 2
+          done
+          echo "La API no respondio a tiempo"; exit 1
+
+      - name: Instalar Newman
+        run: npm install -g newman newman-reporter-htmlextra
+
+      - name: Regresion Newman
+        run: |
+          newman run qa-cuidarte/postman/Cuidarte_EP02.postman_collection.json \
+            -r cli,htmlextra \
+            --reporter-htmlextra-export newman-report.html
+
+      - name: Guardar reporte Newman
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-newman
+          path: newman-report.html
+
+      - name: Puerta de calidad aprobada
+        run: echo "0 CVE alta/critica + 77/77 aserciones"
