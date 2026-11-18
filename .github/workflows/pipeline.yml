@@ -30,6 +30,7 @@ jobs:
       DATA_ENCRYPTION_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
       PORT: "4000"
       NODE_ENV: test
+      DOCUMENTOS_DIR: ${{ github.workspace }}/documentos
 
     steps:
       - name: Checkout API
@@ -80,12 +81,17 @@ jobs:
 
       - name: Levantar la API
         run: |
-          npm start &
+          mkdir -p "$DOCUMENTOS_DIR"
+          npm start > api.log 2>&1 &
           for i in $(seq 1 30); do
             curl -sf http://localhost:4000/api/salud > /dev/null && echo "API lista" && exit 0
             sleep 2
           done
           echo "La API no respondio a tiempo"; exit 1
+
+      - name: Log de la API (si falla)
+        if: failure()
+        run: cat api.log || true
 
       - name: Instalar Newman
         run: npm install -g newman newman-reporter-htmlextra
